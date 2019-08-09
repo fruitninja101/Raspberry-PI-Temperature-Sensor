@@ -1,0 +1,114 @@
+import os
+import glob
+import time
+import json
+import requests
+
+#set the global API request parameters:
+user = 'iot@zendesk.test' + '/token'
+api_token = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+headers = {'content-type': 'application/json'}
+
+#This bit opens the relevant directory where the temp sensor is sending the data 
+os.system('modprobe w1-gpio')
+os.system('modprobe w1-therm')
+base_dir = '/sys/bus/w1/devices/'
+device_folder = glob.glob(base_dir + '28*')[0]
+device_file = device_folder + '/w1_slave'
+
+def read_temp_raw():
+    f = open(device_file, 'r')
+    lines = f.readlines()
+    f.close()
+    return lines
+
+def read_temp():
+    lines = read_temp_raw()
+    while lines[0].strip()[-3:] != 'YES':
+        time.sleep(0.2)
+        lines = read_temp_raw()
+    equals_pos = lines[1].find('t=')
+
+    if equals_pos != -1:
+        temp_string = lines[1][equals_pos+2:]
+        temp_c = float(temp_string) / 1000.0
+        #temp_f = temp_c * 9.0 / 5.0 + 32.0
+        return temp_c
+a=0 #a is  our  counter. it is incremented by 1 each time an event is sent to  stop loads of events being sent
+while True:
+    if read_temp() > 25 and a<2:
+        print(read_temp())
+        
+#Send 2x Sunshine Event' before submitting a ticket to Support
+#package the data in the expected JSON dictionary format
+        #"377448061953" #Zendesk user ID for Dan Customer
+        data = {
+        "profile": {
+        "source": "support",
+        "identifiers": {
+        "user_id": "377448061953" #Zendesk user ID for Dan Customer
+        }
+    },
+        "event": {
+        "type": "Temperature Event",
+        "source":"IoT Sensor",
+        "description": "High temperature warning",
+        "properties": {
+        "item name": "Web Server",
+        "Location": "London-DC1",
+        "Manufacturer": "Texas",
+        "Model": "DS18B20",
+        "Device ID": "1122-5677-1123",
+        "Temperature Value": read_temp()
+    }
+  }
+}
+
+# Encode the data to create a JSON payload
+        payload = json.dumps(data)
+
+# Set the local request parameters
+        url = 'https://<domain>.zendesk.com/api/cdp/v2/track'
+
+# Do the HTTP post request
+        response = requests.post(url, data=payload, auth=(user, api_token), headers=headers)
+
+# Check for HTTP codes other than 202 (Created)
+        if response.status_code != 202:
+            print('Status:', response.status_code, 'Problem with the request. Exiting.')
+            exit()
+
+# Report success
+        print('Successfully logged the Sunshine Event')
+        a = a+1
+        time.sleep(10) #pause for 10 seconds  after logging the event to avoid spam events
+
+    elif a>=2: #if a>=2 then it means we have already submitted 2 events so time to send a ticket for triage
+        
+        #print('triggered the Else if statement')
+        # New ticket info
+        subject = 'Attention required'
+        body = 'A Temperature warning has been issued. Please investigate and contact the customer. Current Temperature is: ' + str(read_temp())
+        requester = '377448061953' #this is the ID for Dan customer
+        submitter = '375568201154' #this is the ID for IoT user
+        # Package the data in a dictionary matching the expected JSON
+        data = {'ticket': {'submitter_id':submitter,'requester_id':requester,'subject': subject, 'comment': {'body': body}}}
+
+        # Encode the data to create a JSON payload
+        payload = json.dumps(data)
+
+        # Set the request parameters
+        url = 'https://<domain>.zendesk.com/api/v2/tickets.json'
+        
+        # Do the HTTP post request
+        response = requests.post(url, data=payload, auth=(user, api_token), headers=headers)
+
+        # Check for HTTP codes other than 201 (Created)
+        if response.status_code != 201:
+            print('Status:', response.status_code, 'Problem with the request. Exiting.')
+            exit()
+
+        # Report success
+        print('Successfully created the ticket.')
+        a=0 #reset the counter so that multiple tickets  are not created
+        time.sleep(10) #pause for 10 seconds to let the sensor cool down so that multiple events don't get logged
